@@ -10,6 +10,11 @@ import sys
 from time import monotonic
 from types import SimpleNamespace
 
+try:
+    from asyncio import timeout as async_timeout
+except ImportError:  # Python 3.10
+    from async_timeout import timeout as async_timeout
+
 import discord
 from dotenv import load_dotenv
 
@@ -97,7 +102,7 @@ async def preload(guild_id: int, output: Path, state_path: Path, concurrency: in
             guild = await client.fetch_guild(guild_id)
         except discord.NotFound as exc:
             raise ValueError(f"Local bot {client.user.id} cannot access target guild {guild_id} (404)") from exc
-        async with asyncio.timeout(6 * 60 * 60):
+        async with async_timeout(6 * 60 * 60):
             scope = await discover_scope(guild, client.user.id, progress, report=report)
             visible_ids = {str(channel.id) for channel in scope.channels}
             missing = set(state["channel_ids"]) - visible_ids

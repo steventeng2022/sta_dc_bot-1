@@ -3,6 +3,11 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
+try:
+    from asyncio import timeout as async_timeout
+except ImportError:  # Python 3.10
+    from async_timeout import timeout as async_timeout
+
 from bot.utils.config_paths import ConfigPaths
 from bot.utils.message_history import (
     HistoryProgress,
@@ -180,6 +185,28 @@ class KingOfNonsense(commands.Cog):
             self._dbs[guild.id] = db
             return db
 
+    async def _prepare_history_seed(
+        self,
+        guild: discord.Guild,
+        db: DatabaseManager,
+    ) -> None:
+        snapshot_path = ConfigPaths.DATA_DIR / "leaderboard_preloads" / f"{guild.id}.json"
+        snapshot = load_snapshot(snapshot_path, guild.id) if snapshot_path.exists() else None
+        async with self._get_lock(self._write_locks, guild.id):
+            if guild.id in self._seed_tokens:
+                return
+            cutoff_id = next_boundary_id()
+            token = uuid4().hex
+            if not await db.begin_message_history_seed(
+                token,
+                cutoff_id,
+                allow_legacy_reseed=snapshot is not None,
+            ):
+                return
+            self._history_cutoffs[guild.id] = cutoff_id
+            self._seed_tokens[guild.id] = token
+            self._snapshots[guild.id] = snapshot
+
     def _is_countable_message(self, message: discord.Message) -> bool:
         return is_countable_message(message)
 
@@ -218,7 +245,7 @@ class KingOfNonsense(commands.Cog):
             if delay > 0:
                 await asyncio.sleep(delay)
             progress = self._seed_progress.setdefault(guild.id, HistoryProgress())
-            async with asyncio.timeout(6 * 60 * 60):
+            async with async_timeout(6 * 60 * 60):
                 scope = await discover_scope(guild, self.bot.user.id, progress)
                 counts = await collect_history(
                     scope,
