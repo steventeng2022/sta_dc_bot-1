@@ -99,7 +99,11 @@ async def test_real_cog_registration_keeps_existing_commands_and_tree_handler():
         assert bot.get_cog("HistoryToday") is cog
         assert bot.tree.on_error is global_error
         params = {param.name: param for param in bot.tree.get_command("today").parameters}
-        assert (params["count"].min_value, params["count"].max_value) == (1, 10)
+        assert params["count"].min_value is None
+        assert params["count"].max_value is None
+        assert {choice.value for choice in params["count"].choices} == {
+            *(str(count) for count in range(1, 11)), "random5"
+        }
         assert (params["month"].min_value, params["month"].max_value) == (1, 12)
         assert {choice.value for choice in params["category"].choices} == {category.value for category in Category}
     finally:
@@ -220,6 +224,22 @@ async def test_lookup_uses_actual_history_client_with_mocked_http(loaded):
 
 
 @pytest.mark.asyncio
+async def test_today_random_category_and_random_five(loaded):
+    bot, cog = loaded
+    items = tuple(HistoryItem(str(index), f"item {index}") for index in range(9))
+    result = HistoryResult(10, 4, Category.DEATHS, items, source_url(10, 4))
+    cog.history.get = AsyncMock(return_value=result)
+    request = interaction()
+    with patch("bot.utils.history_formatting.random.sample", return_value=list(items[1:6])) as sample:
+        await invoke(bot, cog, "today", request, month=10, day=4, category="random", count="random5")
+    cog.history.get.assert_awaited_once_with(10, 4, Category.RANDOM)
+    sample.assert_called_once_with(items, 5)
+    embed = request.edit_original_response.await_args.kwargs["embed"]
+    assert embed.author.name == "逝世"
+    assert embed.description.count("•") == 5
+
+
+@pytest.mark.asyncio
 async def test_invalid_timezone_is_rejected_before_persistence(loaded):
     bot, cog = loaded
     guild, channel = posting_channel()
@@ -250,6 +270,28 @@ async def test_configure_status_and_disable_daily_subscription(loaded):
     await invoke(bot, cog, "daily-off", off)
     assert cog.store.get(guild.id) is None
     assert off.edit_original_response.await_args.kwargs["content"] == "已停用每日推送。"
+
+
+@pytest.mark.asyncio
+async def test_daily_persists_random_category_and_five_mode(loaded):
+    bot, cog = loaded
+    guild, channel = posting_channel()
+    request = interaction(guild=guild)
+    await invoke(
+        bot, cog, "daily", request, channel=channel,
+        category="random", count="random5",
+    )
+    saved = cog.store.get(guild.id)
+    assert saved.category is Category.RANDOM
+    assert saved.count == 5
+    assert saved.random_count is True
+    assert "隨機分類" in request.edit_original_response.await_args.kwargs["content"]
+    assert "隨機抽 5 筆" in request.edit_original_response.await_args.kwargs["content"]
+
+    status = interaction(guild=guild)
+    await invoke(bot, cog, "daily-status", status)
+    assert "隨機分類" in status.response.send_message.await_args.args[0]
+    assert "隨機抽 5 筆" in status.response.send_message.await_args.args[0]
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from bot.utils.history_today import (
     CACHE_MAX_ENTRIES,
     CACHE_TTL_SECONDS,
     CATEGORY_LABELS,
+    DATA_CATEGORIES,
     Category,
     HistoryClient,
     HistoryError,
@@ -96,7 +97,7 @@ class DateAndParserTests(unittest.TestCase):
 
     def test_all_categories_current_and_old_headings(self):
         parsed = parse_history_html(FIXTURE)
-        self.assertEqual(set(parsed), set(Category))
+        self.assertEqual(set(parsed), set(DATA_CATEGORIES))
         self.assertEqual(len(parsed[Category.EVENTS]), 2)
         self.assertEqual(
             parsed[Category.EVENTS][0],
@@ -205,6 +206,19 @@ class HistoryClientTests(unittest.IsolatedAsyncioTestCase):
             await client.get(4, 30, "unknown")
         self.assertEqual(session.calls, [])
 
+    async def test_random_category_selects_only_categories_with_data(self):
+        session = FakeSession(
+            FakeResponse(
+                {"parse": {"text": "<h2>出生</h2><ul><li>1900年：人物</li></ul>"}}
+            )
+        )
+        client = HistoryClient(session)
+        with patch("bot.utils.history_today.random.choice", side_effect=lambda options: options[0]) as choose:
+            result = await client.get(10, 4, Category.RANDOM)
+        self.assertEqual(result.category, Category.BIRTHS)
+        self.assertEqual(result.items, (HistoryItem("1900年", "人物"),))
+        choose.assert_called_once_with([Category.BIRTHS])
+
     async def test_single_flight_shares_all_categories(self):
         gate, entered = asyncio.Event(), asyncio.Event()
         session = FakeSession(FakeResponse(gate=gate, entered=entered))
@@ -214,7 +228,7 @@ class HistoryClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(session.calls), 1)
         gate.set()
         results = await asyncio.gather(*tasks)
-        self.assertEqual({result.category for result in results}, set(Category))
+        self.assertEqual({result.category for result in results}, set(DATA_CATEGORIES))
         self.assertEqual(len(session.calls), 1)
         self.assertEqual(client._inflight, {})
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 import math
+import random
 import re
 from time import monotonic
 from urllib.parse import quote
@@ -21,6 +22,15 @@ class Category(str, Enum):
     BIRTHS = "births"
     DEATHS = "deaths"
     HOLIDAYS = "holidays"
+    RANDOM = "random"
+
+
+DATA_CATEGORIES = (
+    Category.EVENTS,
+    Category.BIRTHS,
+    Category.DEATHS,
+    Category.HOLIDAYS,
+)
 
 
 CATEGORY_LABELS: dict[Category, str] = {
@@ -28,6 +38,7 @@ CATEGORY_LABELS: dict[Category, str] = {
     Category.BIRTHS: "出生",
     Category.DEATHS: "逝世",
     Category.HOLIDAYS: "節日與習俗",
+    Category.RANDOM: "隨機分類",
 }
 
 
@@ -121,8 +132,12 @@ def parse_history_html(html: str) -> dict[Category, tuple[HistoryItem, ...]]:
         block.insert_before(" ")
         block.insert_after(" ")
 
-    items: dict[Category, list[HistoryItem]] = {category: [] for category in Category}
-    seen: dict[Category, set[HistoryItem]] = {category: set() for category in Category}
+    items: dict[Category, list[HistoryItem]] = {
+        category: [] for category in DATA_CATEGORIES
+    }
+    seen: dict[Category, set[HistoryItem]] = {
+        category: set() for category in DATA_CATEGORIES
+    }
     current_category: Category | None = None
     for node in soup.find_all(["h2", "li"]):
         if node.name == "h2":
@@ -198,6 +213,9 @@ class HistoryClient:
                 task.add_done_callback(lambda done: self._finish_request(key, done))
             # Cancelling a Discord interaction must not cancel other waiters.
             data = await asyncio.shield(task)
+        if category is Category.RANDOM:
+            available = [item for item in DATA_CATEGORIES if data[item]]
+            category = random.choice(available)
         return HistoryResult(month, day, category, data[category], source_url(month, day))
 
     async def aclose(self) -> None:

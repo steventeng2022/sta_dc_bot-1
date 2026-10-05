@@ -29,6 +29,7 @@ class Subscription:
     timezone: str
     category: Category = Category.EVENTS
     count: int = 5
+    random_count: bool = False
     last_sent_date: str | None = None
 
     def __post_init__(self) -> None:
@@ -41,6 +42,8 @@ class Subscription:
             raise ValueError("分鐘必須介於 0 到 59。")
         if type(self.count) is not int or not 1 <= self.count <= 10:
             raise ValueError("筆數必須介於 1 到 10。")
+        if type(self.random_count) is not bool:
+            raise ValueError("隨機筆數設定必須是布林值。")
         try:
             if not isinstance(self.timezone, str):
                 raise ValueError
@@ -73,17 +76,28 @@ class Store:
                     timezone TEXT NOT NULL,
                     category TEXT NOT NULL,
                     count INTEGER NOT NULL,
+                    random_count INTEGER NOT NULL DEFAULT 0,
                     last_sent_date TEXT
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(subscriptions)")
+            }
+            if "random_count" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE subscriptions ADD COLUMN random_count INTEGER NOT NULL DEFAULT 0"
+                )
 
     def close(self) -> None:
         self._connection.close()
 
     @staticmethod
     def _subscription(row: sqlite3.Row) -> Subscription:
-        return Subscription(**dict(row))
+        values = dict(row)
+        values["random_count"] = bool(values["random_count"])
+        return Subscription(**values)
 
     def get(self, guild_id: int) -> Subscription | None:
         row = self._connection.execute(
@@ -105,15 +119,16 @@ class Store:
                 """
                 INSERT INTO subscriptions (
                     guild_id, channel_id, hour, minute, timezone, category,
-                    count, last_sent_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    count, random_count, last_sent_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                     channel_id = excluded.channel_id,
                     hour = excluded.hour,
                     minute = excluded.minute,
                     timezone = excluded.timezone,
                     category = excluded.category,
-                    count = excluded.count
+                    count = excluded.count,
+                    random_count = excluded.random_count
                 """,
                 (
                     sub.guild_id,
@@ -123,6 +138,7 @@ class Store:
                     sub.timezone,
                     sub.category.value,
                     sub.count,
+                    int(sub.random_count),
                     sub.last_sent_date,
                 ),
             )
