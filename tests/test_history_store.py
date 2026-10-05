@@ -31,6 +31,7 @@ class SubscriptionTests(unittest.TestCase):
             {"count": 0},
             {"count": 11},
             {"count": True},
+            {"random_count": 1},
             {"timezone": "Not/AZone"},
             {"timezone": "../UTC"},
             {"timezone": None},
@@ -98,6 +99,34 @@ class StoreTests(unittest.TestCase):
     def test_marker_format_validation(self) -> None:
         with self.assertRaises(ValueError):
             self.store.mark_sent(1, "tomorrow")
+
+    def test_random_count_is_persisted_and_old_schema_is_migrated(self) -> None:
+        self.store.upsert(replace(self.sub, random_count=True))
+        self.assertTrue(self.store.get(1).random_count)
+
+        import sqlite3
+
+        legacy_path = self.path.parent / "legacy.sqlite3"
+        connection = sqlite3.connect(legacy_path)
+        connection.execute(
+            """CREATE TABLE subscriptions (
+                guild_id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL,
+                hour INTEGER NOT NULL, minute INTEGER NOT NULL, timezone TEXT NOT NULL,
+                category TEXT NOT NULL, count INTEGER NOT NULL, last_sent_date TEXT
+            )"""
+        )
+        connection.execute(
+            "INSERT INTO subscriptions VALUES (1, 2, 9, 0, 'Asia/Taipei', 'events', 5, NULL)"
+        )
+        connection.commit()
+        connection.close()
+        migrated = Store(legacy_path)
+        try:
+            self.assertFalse(migrated.get(1).random_count)
+            migrated.upsert(replace(self.sub, random_count=True))
+            self.assertTrue(migrated.get(1).random_count)
+        finally:
+            migrated.close()
 
 
 if __name__ == "__main__":

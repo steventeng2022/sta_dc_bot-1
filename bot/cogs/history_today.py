@@ -25,6 +25,23 @@ logger = logging.getLogger(__name__)
 CATEGORY_CHOICES = [
     app_commands.Choice(name=CATEGORY_LABELS[item], value=item.value) for item in Category
 ]
+COUNT_CHOICES = [
+    app_commands.Choice(name=f"{count} 筆", value=str(count)) for count in range(1, 11)
+] + [app_commands.Choice(name="隨機抽 5 筆", value="random5")]
+
+
+def parse_count_selection(value: str) -> tuple[int, bool]:
+    if type(value) is int:
+        value = str(value)
+    if value == "random5":
+        return 5, True
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("請選擇 1 到 10 筆，或隨機抽 5 筆。") from None
+    if not 1 <= count <= 10 or str(count) != value:
+        raise ValueError("請選擇 1 到 10 筆，或隨機抽 5 筆。")
+    return count, False
 
 
 class HistoryToday(commands.Cog):
@@ -108,7 +125,11 @@ class HistoryToday(commands.Cog):
             raise RuntimeError("資料查詢服務尚未就緒。")
         result = await self.history.get(delivery_date.month, delivery_date.day, subscription.category)
         await channel.send(
-            embed=build_embed(result, subscription.count),
+            embed=build_embed(
+                result,
+                subscription.count,
+                random_count=subscription.random_count,
+            ),
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
@@ -140,16 +161,16 @@ class HistoryToday(commands.Cog):
         month="月份（需與日期一起填寫）",
         day="日期（需與月份一起填寫）",
         category="資料分類",
-        count="顯示筆數，預設 5 筆",
+        count="顯示筆數，或隨機抽 5 筆",
     )
-    @app_commands.choices(category=CATEGORY_CHOICES)
+    @app_commands.choices(category=CATEGORY_CHOICES, count=COUNT_CHOICES)
     async def today(
         self,
         interaction: discord.Interaction,
         month: app_commands.Range[int, 1, 12] | None = None,
         day: app_commands.Range[int, 1, 31] | None = None,
         category: str = "events",
-        count: app_commands.Range[int, 1, 10] = 5,
+        count: str = "5",
     ) -> None:
         if (month is None) != (day is None):
             await interaction.response.send_message("查詢指定日期時，請同時填寫 month 與 day。", ephemeral=True)
@@ -162,11 +183,18 @@ class HistoryToday(commands.Cog):
         except ValueError as error:
             await interaction.response.send_message(str(error), ephemeral=True)
             return
+        try:
+            count_value, random_count = parse_count_selection(count)
+        except ValueError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
         await interaction.response.defer(thinking=True)
         if self.history is None:
             raise RuntimeError("資料查詢服務尚未就緒。")
         result = await self.history.get(month, day, Category(category))
-        await interaction.edit_original_response(embed=build_embed(result, count))
+        await interaction.edit_original_response(
+            embed=build_embed(result, count_value, random_count=random_count)
+        )
 
     @app_commands.command(name="daily", description="設定每天推送歷史上的今天（需管理伺服器權限）")
     @app_commands.guild_only()
@@ -178,9 +206,9 @@ class HistoryToday(commands.Cog):
         minute="推送時間：分鐘，預設 0",
         timezone="IANA 時區，例如 Asia/Taipei",
         category="推送的資料分類",
-        count="顯示筆數，預設 5 筆",
+        count="顯示筆數，或隨機抽 5 筆",
     )
-    @app_commands.choices(category=CATEGORY_CHOICES)
+    @app_commands.choices(category=CATEGORY_CHOICES, count=COUNT_CHOICES)
     async def daily(
         self,
         interaction: discord.Interaction,
@@ -189,7 +217,7 @@ class HistoryToday(commands.Cog):
         minute: app_commands.Range[int, 0, 59] = 0,
         timezone: str | None = None,
         category: str = "events",
-        count: app_commands.Range[int, 1, 10] = 5,
+        count: str = "5",
     ) -> None:
         guild = interaction.guild
         if guild is None:
@@ -204,6 +232,7 @@ class HistoryToday(commands.Cog):
             await interaction.response.send_message("請選擇你可以查看的頻道。", ephemeral=True)
             return
         try:
+            count_value, random_count = parse_count_selection(count)
             subscription = Subscription(
                 guild_id=guild.id,
                 channel_id=channel.id,
@@ -211,7 +240,8 @@ class HistoryToday(commands.Cog):
                 minute=minute,
                 timezone=(timezone or self.timezone).strip(),
                 category=Category(category),
-                count=count,
+                count=count_value,
+                random_count=random_count,
             )
         except ValueError as error:
             await interaction.response.send_message(str(error), ephemeral=True)
@@ -220,7 +250,8 @@ class HistoryToday(commands.Cog):
         await self.scheduler.set_subscription(subscription)
         await interaction.edit_original_response(
             content=f"已設定每天 **{hour:02d}:{minute:02d}**（{subscription.timezone}）在 {channel.mention} "
-            f"推送 **{CATEGORY_LABELS[subscription.category]}**，最多 {count} 筆。\n"
+            f"推送 **{CATEGORY_LABELS[subscription.category]}**，"
+            f"{'隨機抽 5 筆' if random_count else f'最多 {count_value} 筆'}。\n"
             "若今天已過設定時間，會在下次排程檢查時推送；今天已成功推送則明天繼續。"
         )
 
@@ -238,7 +269,8 @@ class HistoryToday(commands.Cog):
         await interaction.response.send_message(
             f"頻道：<#{subscription.channel_id}>\n"
             f"時間：{subscription.hour:02d}:{subscription.minute:02d}（{subscription.timezone}）\n"
-            f"分類：{CATEGORY_LABELS[subscription.category]} · 最多 {subscription.count} 筆\n"
+            f"分類：{CATEGORY_LABELS[subscription.category]} · "
+            f"{'隨機抽 5 筆' if subscription.random_count else f'最多 {subscription.count} 筆'}\n"
             f"最後成功推送日期：{subscription.last_sent_date or '尚未推送'}",
             ephemeral=True,
         )
@@ -260,7 +292,8 @@ class HistoryToday(commands.Cog):
             "**歷史上的今天**\n"
             "`/today`：查看今天的大事記。\n"
             "`/today month:10 day:4`：查看指定月日，支援 2 月 29 日。\n"
-            "`category`：大事記／出生／逝世／節假日與習俗；`count`：1～10 筆。\n"
+            "`category`：大事記／出生／逝世／節假日與習俗／隨機分類；"
+            "`count`：1～10 筆或隨機抽 5 筆。\n"
             "`/daily`：指定頻道、時間、時區及分類，每天自動推送。\n"
             "`/daily-status`、`/daily-off`：查看設定、停用推送。\n"
             "每日推送設定需要「管理伺服器」權限。\n"
